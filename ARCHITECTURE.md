@@ -1,4 +1,4 @@
-# Furniture Visualizer Platform - Architecture Documentation
+# DAM & Product Visualizer Platform - Architecture Documentation
 
 ## Overview
 

@@ -1,5 +1,5 @@
 /*
-  # Furniture Visualizer Platform Schema
+  # DAM & Product Visualizer Platform Schema
 
   ## Overview
   Complete database schema for furniture visualization, configuration, and AR platform.

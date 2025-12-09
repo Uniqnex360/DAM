@@ -33,7 +33,7 @@ export function AuthPage() {
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-slate-900 mb-2">
-              Furniture Visualizer
+              DAM & Product Visualizer
             </h1>
             <p className="text-slate-600">
               {isSignUp ? 'Create your account' : 'Sign in to your account'}

@@ -1,6 +1,6 @@
-# Furniture Visualizer API Reference
+# DAM & Product Visualizer API Reference
 
-Complete API specification for the Furniture Visualizer platform.
+Complete API specification for the DAM & Product Visualizer platform.
 
 ## Base URL
 
