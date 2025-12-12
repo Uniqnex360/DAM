@@ -252,30 +252,33 @@ serve(async (req) => {
       throw new Error("Missing required fields: imageId, imageUrl, or operation");
     }
 
-    // --- 1. FILENAME & EXTENSION LOGIC ---
     const baseName = originalName
       ? originalName.replace(/\.[^/.]+$/, "")
       : `image_${imageId}`;
     const safeName = baseName.replace(/[^a-zA-Z0-9-_]/g, "_");
     
     let opSuffix = operation;
-    let fileExt = "png"; // Default to PNG
+    let fileExt = "png"; 
 
     if (operation === "bg-remove" || operation === "remove-bg") {
       opSuffix = "no-bg";
-      fileExt = "png"; // Transparency requires PNG
+      fileExt = "png"; 
     } else if (operation === "resize") {
       opSuffix = "resized";
-      fileExt = "png"; // Keep PNG for resize (as requested)
+      fileExt = "png"; 
     } else if (operation === "compress") {
       opSuffix = "compressed";
-      fileExt = "jpg"; // Force JPG for compression to reduce size
+      fileExt = "jpg"; 
+    }
+    else if(operation==='retouch')
+    {
+      opSuffix='enchanced'
+      fileExt='jpg'
     }
 
     const finalPublicId = `${safeName}_${opSuffix}`;
     const finalFileName = `${finalPublicId}.${fileExt}`;
 
-    // --- 2. INITIALIZE CLIENTS ---
     const supabaseAdmin = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
@@ -285,9 +288,7 @@ serve(async (req) => {
     let finalCloudinaryUrl = null;
     let finalCloudinaryPublicId = null;
 
-    // --- 3. PROCESSING ---
     if (operation === "bg-remove" || operation === "remove-bg") {
-      // === REMOVE BG LOGIC ===
       const REMOVE_BG_API_KEY = Deno.env.get("REMOVE_BG_API_KEY");
       if (!REMOVE_BG_API_KEY) throw new Error("Remove BG API KEY missing!");
       
@@ -309,8 +310,7 @@ serve(async (req) => {
       }
       resultBlob = await apiRes.blob();
 
-    } else if (operation === "resize" || operation === "compress") {
-      // === FAIL-SAFE CLOUDINARY STRATEGY ===
+    } else if (operation === "resize" || operation === "compress" || operation=='retouch') {
       console.log(`Processing ${imageId}: ${operation}...`);
 
       const CLOUD_NAME = Deno.env.get("CLOUDINARY_CLOUD_NAME");
@@ -320,18 +320,19 @@ serve(async (req) => {
       if (!CLOUD_NAME || !API_KEY || !API_SECRET)
         throw new Error("Cloudinary keys missing");
 
-      // A. Determine Transformation String
       let transformStr = "";
       if (operation === "resize") {
         const width = options?.width || 1920;
         const height = options?.height || 1080;
-        transformStr = `w_${width},h_${height},c_scale`; // Resize, keep PNG
+        transformStr = `w_${width},h_${height},c_scale`;
       } else if (operation === "compress") {
         const quality = options?.quality || 80;
-        transformStr = `q_${quality},f_jpg`; // Compress, force JPG
+        transformStr = `q_${quality},f_jpg`; 
+      }
+      else if (operation === "retouch") {
+        transformStr = `e_upscale`; 
       }
 
-      // B. Upload ORIGINAL to Cloudinary (No transform yet)
       const timestamp = Math.round(new Date().getTime() / 1000);
       const strToSign = `timestamp=${timestamp}${API_SECRET}`;
       const encoder = new TextEncoder();

@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { api } from "../services/api";
 import { ImageCropModal } from "./ImageCropModal";
+import { supabase } from "../lib/supabase";
+
 interface ImageItem {
   id: string;
   url: string;
@@ -103,6 +105,8 @@ export function AdvancedUpload() {
   const [uploadResult, setUploadResult] = useState<any>(null);
   const [error, setError] = useState<string>("");
   const [autoDetect, setAutoDetect] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [currentAnalysis, setCurrentAnalysis] = useState<any>(null);
   const [compressionQuality, setCompressionQuality] = useState(80);
   const [selectedProcessing, setSelectedProcessing] = useState<string[]>([]);
   const [urlInput, setUrlInput] = useState("");
@@ -155,15 +159,79 @@ export function AdvancedUpload() {
     setImages((prev) => [...prev, ...newImages]);
   };
   const urlToFile = async (url: string, filename: string): Promise<File> => {
-  try {
-    const response = await fetch(url, { mode: 'cors' }); 
-    const blob = await response.blob();
-    return new File([blob], filename, { type: blob.type });
-  } catch (e) {
-    console.warn("Could not convert URL to File (CORS restriction):", url);
-    throw e;
-  }
-};
+    try {
+      const response = await fetch(url, { mode: "cors" });
+      const blob = await response.blob();
+      return new File([blob], filename, { type: blob.type });
+    } catch (e) {
+      console.warn("Could not convert URL to File (CORS restriction):", url);
+      throw e;
+    }
+  };
+  const runAutoDetection = async () => {
+    const itemToAnalyze = images.find((img) => img.file);
+    if (!itemToAnalyze || !itemToAnalyze.file) return;
+
+    setIsAnalyzing(true);
+
+    try {
+      const base64 = await new Promise<string>((resolve) => {
+        const r = new FileReader();
+        r.readAsDataURL(itemToAnalyze.file!);
+        r.onload = () => resolve(r.result as string);
+      });
+
+      // Get Dimensions
+      const img = new Image();
+      await new Promise((r) => {
+        img.onload = r;
+        img.src = URL.createObjectURL(itemToAnalyze.file!);
+      });
+
+      // Call API
+      const { data, error } = await supabase.functions.invoke("analyze-image", {
+        body: {
+          imageBase64: base64,
+          fileName: itemToAnalyze.name,
+          fileSize: itemToAnalyze.file!.size,
+          width: img.width,
+          height: img.height,
+        },
+      });
+
+      if (error || !data.analysis) throw error;
+
+      const analysis = data.analysis;
+      console.log("Full AI Analysis:", analysis);
+      setCurrentAnalysis(analysis);
+
+      // --- MAP AI SUGGESTIONS TO CHECKBOXES ---
+      const newOps = new Set<string>();
+
+      // 1. BG Remove
+      if (analysis.suggestions.backgroundRemoval) newOps.add("bg-remove");
+
+      // 2. Upscale (if quality < 80 or suggested)
+      if (analysis.suggestions.upscaling || analysis.qualityScore < 80)
+        newOps.add("retouch"); // Mapped to Cloudinary Upscale
+
+      // 3. Compress (if file huge or suggested)
+      if (analysis.suggestions.compression) {
+        newOps.add("compress");
+        setCompressionQuality(80); // Set sane default
+      }
+
+      // 4. Crop (if compliance issues detected)
+      if (analysis.suggestions.cropping) newOps.add("crop"); // or "smart-crop" if you implemented that
+
+      setSelectedProcessing(Array.from(newOps));
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const handleCropSave = (newFile: File) => {
     if (!editingImage) return;
     const newUrl = URL.createObjectURL(newFile);
@@ -190,26 +258,26 @@ export function AdvancedUpload() {
       id: tempIds[idx],
       url: url.trim(),
       name: `Image ${idx + 1}`,
-      preview: url.trim(), 
-      file: undefined
+      preview: url.trim(),
+      file: undefined,
     }));
     setImages((prev) => [...prev, ...placeholders]);
     setUrlInput("");
     placeholders.forEach(async (item) => {
-        try {
-            console.log("Proxying:", item.url);
-            const file = await api.proxyUrlToFile(item.url, item.name + ".jpg");
-            const localPreview = URL.createObjectURL(file);
-            setImages(currentImages => 
-                currentImages.map(img => 
-                    img.id === item.id 
-                    ? { ...img, file: file, preview: localPreview, url: localPreview } 
-                    : img
-                )
-            );
-        } catch (e) {
-            console.error("Could not fetch URL for cropping:", e);
-        }
+      try {
+        console.log("Proxying:", item.url);
+        const file = await api.proxyUrlToFile(item.url, item.name + ".jpg");
+        const localPreview = URL.createObjectURL(file);
+        setImages((currentImages) =>
+          currentImages.map((img) =>
+            img.id === item.id
+              ? { ...img, file: file, preview: localPreview, url: localPreview }
+              : img
+          )
+        );
+      } catch (e) {
+        console.error("Could not fetch URL for cropping:", e);
+      }
     });
   };
   const parseCsvFile = async (file: File) => {
@@ -260,8 +328,55 @@ export function AdvancedUpload() {
           break;
         }
         case "urls": {
-          const urls = images.map((img) => img.url);
-          result = await api.uploadFromUrls(urls);
+          // 1. Separate items into Files (proxied/cropped) and Raw URLs
+          const filesToUpload: File[] = [];
+          const urlsToUpload: string[] = [];
+
+          // Helper to process items
+          await Promise.all(
+            images.map(async (img) => {
+              // A. If we already have a File object (from Proxy or Crop), use it
+              if (img.file) {
+                filesToUpload.push(img.file);
+                return;
+              }
+              // B. If it is a local blob URL but missing the File object, fetch it
+              if (img.url.startsWith("blob:")) {
+                try {
+                  const res = await fetch(img.url);
+                  const blob = await res.blob();
+                  const file = new File([blob], img.name, { type: blob.type });
+                  filesToUpload.push(file);
+                } catch (e) {
+                  console.error("Failed to convert blob to file", e);
+                }
+                return;
+              }
+              // C. Otherwise, it is a normal remote URL
+              urlsToUpload.push(img.url);
+            })
+          );
+
+          // 2. Upload them separately
+          let fileResults = { images: [], uploadId: null };
+          let urlResults = { images: [], uploadId: null };
+
+          if (filesToUpload.length > 0) {
+            fileResults = await api.uploadImages(filesToUpload);
+          }
+
+          if (urlsToUpload.length > 0) {
+            urlResults = await api.uploadFromUrls(urlsToUpload);
+          }
+
+          // 3. Combine results so the rest of the function works normally
+          result = {
+            uploadId: fileResults.uploadId || urlResults.uploadId, // Use either ID
+            images: [
+              ...(fileResults.images || []),
+              ...(urlResults.images || []),
+            ],
+          };
           break;
         }
         case "product-page": {
@@ -275,21 +390,32 @@ export function AdvancedUpload() {
         default:
           throw new Error("Invalid upload source");
       }
-      const activeOperations: ("bg-remove" | "resize"|'compress'|"3d-model")[] = [];
+      const activeOperations: (
+        | "bg-remove"
+        | "resize"
+        | "compress"
+        | "3d-model"
+        | "retouch"
+      )[] = [];
       if (!autoDetect) {
-        if (selectedProcessing.includes("bg-remove")) activeOperations.push("bg-remove");
-        if (selectedProcessing.includes("resize")) activeOperations.push("resize");
-        if (selectedProcessing.includes("compress")) activeOperations.push("compress");
-        if (selectedProcessing.includes("3d-model")) activeOperations.push("3d-model");
+        if (selectedProcessing.includes("retouch"))
+          activeOperations.push("retouch");
+        if (selectedProcessing.includes("bg-remove"))
+          activeOperations.push("bg-remove");
+        if (selectedProcessing.includes("resize"))
+          activeOperations.push("resize");
+        if (selectedProcessing.includes("compress"))
+          activeOperations.push("compress");
+        if (selectedProcessing.includes("3d-model"))
+          activeOperations.push("3d-model");
       }
       if (activeOperations.length > 0 && result?.images) {
         try {
           console.log(`Initiating processes: ${activeOperations.join(", ")}`);
           await Promise.all(
             result.images.map(async (uploadedImage: any, index: number) => {
-              const sourceUrl =
+              let currentSourceUrl =
                 uploadedImage.cloudinaryUrl || uploadedImage.url;
-            let currentSourceUrl = uploadedImage.cloudinaryUrl || uploadedImage.url;
               let originalName = uploadedImage.id;
               if (uploadSource === "files") {
                 if (images[index]) originalName = images[index].name;
@@ -301,9 +427,10 @@ export function AdvancedUpload() {
               for (const op of activeOperations) {
                 console.log(`Running ${op} on ${originalName}...`);
                 let options = {};
-                if (op === 'resize') options = resizeDims;
-                if (op === 'compress') options = { quality: compressionQuality }; 
-                const response=await api.processImageAI(
+                if (op === "resize") options = resizeDims;
+                if (op === "compress")
+                  options = { quality: compressionQuality };
+                const response = await api.processImageAI(
                   uploadedImage.id,
                   currentSourceUrl,
                   op,
@@ -321,7 +448,9 @@ export function AdvancedUpload() {
           console.error("AI Processing failed", processError);
         }
       }
-       const otherProcessing = selectedProcessing.filter((p) => p !== "bg-remove" && p !== "resize" && p !== "compress");
+      const otherProcessing = selectedProcessing.filter(
+        (p) => p !== "bg-remove" && p !== "resize" && p !== "compress"
+      );
       if (!autoDetect && otherProcessing.length > 0) {
         const imageProcessing: Record<string, string[]> = {};
         images.forEach((img) => {
@@ -568,39 +697,42 @@ export function AdvancedUpload() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                 {images.map((image) => (
                   <div key={image.id} className="relative group">
-                    <div className="aspect-square bg-slate-100 rounded-lg overflow-hidden">
-                      {image.preview ? (
-                        <img
-                          src={image.preview}
-                          alt={image.name}
-                          className="w-full h-full object-cover"
-                        />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <Globe className="w-12 h-12 text-slate-400" />
-                        </div>
-                      )}
-                      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-2">
-                        {/* Edit/Crop Button */}
-                        {selectedProcessing.includes("crop") && (
-                          <button
-                            onClick={() => setEditingImage(image)}
-                            className="p-2 bg-white rounded-full hover:bg-blue-50 transition-colors"
-                            title="Crop Image"
-                          >
-                            <Crop className="w-4 h-4 text-blue-600" />
-                          </button>
-                        )}
-                        {/* Remove Button */}
-                        {/* <button
-                            onClick={() => removeImage(image.id)}
-                            className="p-2 bg-white rounded-full hover:bg-red-50 transition-colors"
-                            title="Remove"
-                        >
-                            <XCircle className="w-4 h-4 text-red-500" />
-                        </button> */}
-                      </div>
-                    </div>
+                    <div className="aspect-square bg-slate-100 rounded-lg overflow-hidden relative"> {/* Added 'relative' */}
+  {image.preview ? (
+    <img
+      src={image.preview}
+      alt={image.name}
+      className="w-full h-full object-cover"
+    />
+  ) : (
+    <div className="w-full h-full flex items-center justify-center">
+      <Globe className="w-12 h-12 text-slate-400" />
+    </div>
+  )}
+  
+  {/* ⬇️ ADD QUALITY SCORE BADGE HERE ⬇️ */}
+  {currentAnalysis && (
+    <div className="absolute top-2 left-2">
+      <div className="px-2 py-1 bg-black/70 text-white text-xs font-medium rounded">
+        Score: {currentAnalysis.qualityScore}
+      </div>
+    </div>
+  )}
+  
+  {/* HOVER BUTTONS - Keep this after the badge */}
+  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-2">
+    {/* Edit/Crop Button */}
+    {selectedProcessing.includes("crop") && (
+      <button
+        onClick={() => setEditingImage(image)}
+        className="p-2 bg-white rounded-full hover:bg-blue-50 transition-colors"
+        title="Crop Image"
+      >
+        <Crop className="w-4 h-4 text-blue-600" />
+      </button>
+    )}
+  </div>
+</div>
                     <button
                       onClick={() => removeImage(image.id)}
                       className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
@@ -669,6 +801,285 @@ export function AdvancedUpload() {
               </div>
             </div>
           )}
+          {/* AI Analysis Results Display */}
+          {currentAnalysis && (
+            <div className="mt-6 p-6 bg-gradient-to-br from-white to-blue-50 border border-blue-200 rounded-xl shadow-sm">
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2 bg-blue-100 rounded-lg">
+                    <Wand2 className="w-6 h-6 text-blue-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-slate-900">
+                      AI Image Analysis
+                    </h3>
+                    <p className="text-sm text-slate-600">
+                      Detailed assessment of your product image
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <div className="text-right">
+                    <div className="text-3xl font-bold text-slate-900">
+                      {currentAnalysis.qualityScore}
+                      <span className="text-sm text-slate-500">/100</span>
+                    </div>
+                    <div className="text-xs font-medium text-slate-500">
+                      Quality Score
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Product Category */}
+              <div className="mb-6 p-4 bg-white border border-slate-200 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-slate-500">
+                      Product Category
+                    </div>
+                    <div className="text-lg font-semibold text-slate-900">
+                      {currentAnalysis.productCategory}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-medium text-slate-500">
+                      Background Type
+                    </div>
+                    <div className="text-lg font-semibold text-slate-900">
+                      {currentAnalysis.backgroundAnalysis.type}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Issues List */}
+              <div className="mb-6">
+                <h4 className="text-lg font-semibold text-slate-900 mb-4">
+                  Detected Issues ({currentAnalysis.issues.length})
+                </h4>
+                <div className="space-y-3">
+                  {currentAnalysis.issues.map((issue, index) => (
+                    <div
+                      key={index}
+                      className={`p-4 border-l-4 rounded-r-lg ${
+                        issue.severity === "high"
+                          ? "border-red-500 bg-red-50"
+                          : issue.severity === "medium"
+                          ? "border-yellow-500 bg-yellow-50"
+                          : "border-blue-500 bg-blue-50"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div>
+                          <div className="flex items-center space-x-2 mb-1">
+                            <span
+                              className={`px-2 py-0.5 text-xs font-medium rounded ${
+                                issue.severity === "high"
+                                  ? "bg-red-100 text-red-800"
+                                  : issue.severity === "medium"
+                                  ? "bg-yellow-100 text-yellow-800"
+                                  : "bg-blue-100 text-blue-800"
+                              }`}
+                            >
+                              {issue.severity.toUpperCase()}
+                            </span>
+                            <span className="text-sm font-medium text-slate-900">
+                              {issue.type}
+                            </span>
+                          </div>
+                          <p className="text-slate-700">{issue.description}</p>
+                        </div>
+                        {issue.severity === "high" && (
+                          <XCircle className="w-5 h-5 text-red-500 flex-shrink-0" />
+                        )}
+                      </div>
+                      <div className="mt-2 pt-2 border-t border-slate-200">
+                        <div className="text-sm font-medium text-slate-900">
+                          Suggested Action:
+                        </div>
+                        <p className="text-sm text-slate-700">
+                          {issue.suggestedAction}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Compliance Status */}
+              <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div
+                  className={`p-4 border-2 rounded-lg ${
+                    currentAnalysis.compliance.amazon.isCompliant
+                      ? "border-green-200 bg-green-50"
+                      : "border-red-200 bg-red-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center space-x-2">
+                      {currentAnalysis.compliance.amazon.isCompliant ? (
+                        <CheckCircle className="w-5 h-5 text-green-500" />
+                      ) : (
+                        <XCircle className="w-5 h-5 text-red-500" />
+                      )}
+                      <span className="font-semibold text-slate-900">
+                        Amazon
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2 py-1 text-xs font-medium rounded ${
+                        currentAnalysis.compliance.amazon.isCompliant
+                          ? "bg-green-100 text-green-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {currentAnalysis.compliance.amazon.isCompliant
+                        ? "COMPLIANT"
+                        : "NON-COMPLIANT"}
+                    </span>
+                  </div>
+                  {currentAnalysis.compliance.amazon.violations.length > 0 && (
+                    <div>
+                      <div className="text-sm font-medium text-slate-700 mb-1">
+                        Violations:
+                      </div>
+                      <ul className="text-sm text-slate-600 space-y-1">
+                        {currentAnalysis.compliance.amazon.violations
+                          .slice(0, 3)
+                          .map((violation, idx) => (
+                            <li key={idx} className="flex items-start">
+                              <span className="mr-2">•</span>
+                              {violation}
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className={`p-4 border-2 rounded-lg ${
+                    currentAnalysis.compliance.shopify.isCompliant
+                      ? "border-green-200 bg-green-50"
+                      : "border-red-200 bg-red-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center space-x-2">
+                      {currentAnalysis.compliance.shopify.isCompliant ? (
+                        <CheckCircle className="w-5 h-5 text-green-500" />
+                      ) : (
+                        <XCircle className="w-5 h-5 text-red-500" />
+                      )}
+                      <span className="font-semibold text-slate-900">
+                        Shopify
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2 py-1 text-xs font-medium rounded ${
+                        currentAnalysis.compliance.shopify.isCompliant
+                          ? "bg-green-100 text-green-800"
+                          : "bg-red-100 text-red-800"
+                      }`}
+                    >
+                      {currentAnalysis.compliance.shopify.isCompliant
+                        ? "COMPLIANT"
+                        : "NON-COMPLIANT"}
+                    </span>
+                  </div>
+                  {currentAnalysis.compliance.shopify.violations.length > 0 && (
+                    <div>
+                      <div className="text-sm font-medium text-slate-700 mb-1">
+                        Violations:
+                      </div>
+                      <ul className="text-sm text-slate-600 space-y-1">
+                        {currentAnalysis.compliance.shopify.violations
+                          .slice(0, 3)
+                          .map((violation, idx) => (
+                            <li key={idx} className="flex items-start">
+                              <span className="mr-2">•</span>
+                              {violation}
+                            </li>
+                          ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* AI Suggestions */}
+              <div className="mb-6">
+                <h4 className="text-lg font-semibold text-slate-900 mb-4">
+                  AI Recommendations
+                </h4>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  {Object.entries(currentAnalysis.suggestions).map(
+                    ([key, value]) => (
+                      <div
+                        key={key}
+                        className={`p-3 border-2 rounded-lg text-center transition-all ${
+                          value
+                            ? "border-green-500 bg-green-50"
+                            : "border-slate-200 bg-slate-50"
+                        }`}
+                      >
+                        <div className="text-sm font-medium text-slate-900 capitalize">
+                          {key.replace(/([A-Z])/g, " $1")}
+                        </div>
+                        <div className="mt-1">
+                          {value ? (
+                            <CheckCircle className="w-5 h-5 text-green-500 mx-auto" />
+                          ) : (
+                            <XCircle className="w-5 h-5 text-slate-400 mx-auto" />
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-600 mt-1">
+                          {value ? "Recommended" : "Not needed"}
+                        </div>
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {/* Auto-applied Operations */}
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="flex items-center space-x-2 mb-2">
+                  <Wand2 className="w-5 h-5 text-blue-600" />
+                  <span className="font-semibold text-slate-900">
+                    Auto-applied Operations
+                  </span>
+                </div>
+                <p className="text-sm text-slate-700">
+                  Based on this analysis, the following operations have been
+                  automatically selected:
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {currentAnalysis.suggestions.backgroundRemoval && (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full">
+                      Background Removal
+                    </span>
+                  )}
+                  {currentAnalysis.suggestions.upscaling && (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full">
+                      Image Upscaling
+                    </span>
+                  )}
+                  {currentAnalysis.suggestions.cropping && (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full">
+                      Smart Cropping
+                    </span>
+                  )}
+                  {currentAnalysis.suggestions.enhancement && (
+                    <span className="px-3 py-1 bg-blue-100 text-blue-800 text-sm font-medium rounded-full">
+                      Image Enhancement
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
       <div className="space-y-6">
@@ -681,7 +1092,15 @@ export function AdvancedUpload() {
               <input
                 type="checkbox"
                 checked={autoDetect}
-                onChange={(e) => setAutoDetect(e.target.checked)}
+                onChange={(e) => {
+                  const isChecked = e.target.checked;
+                  setAutoDetect(isChecked);
+                  if (isChecked) {
+                    runAutoDetection();
+                  } else {
+                    setSelectedProcessing([]);
+                  }
+                }}
                 className="w-4 h-4 text-blue-600 rounded"
               />
               <div className="flex items-center space-x-1">
@@ -728,48 +1147,70 @@ export function AdvancedUpload() {
                         </p>
                       </div>
                     </label>
-                    {option.id === "resize" && selectedProcessing.includes("resize") && (
-                      <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-xs font-semibold text-slate-500">Width (px)</label>
-                          <input 
-                            type="number" 
-                            value={resizeDims.width}
-                            onChange={(e) => setResizeDims(prev => ({...prev, width: Number(e.target.value)}))}
-                            className="w-full mt-1 px-2 py-1 text-sm border rounded"
+                    {option.id === "resize" &&
+                      selectedProcessing.includes("resize") && (
+                        <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-xs font-semibold text-slate-500">
+                              Width (px)
+                            </label>
+                            <input
+                              type="number"
+                              value={resizeDims.width}
+                              onChange={(e) =>
+                                setResizeDims((prev) => ({
+                                  ...prev,
+                                  width: Number(e.target.value),
+                                }))
+                              }
+                              className="w-full mt-1 px-2 py-1 text-sm border rounded"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs font-semibold text-slate-500">
+                              Height (px)
+                            </label>
+                            <input
+                              type="number"
+                              value={resizeDims.height}
+                              onChange={(e) =>
+                                setResizeDims((prev) => ({
+                                  ...prev,
+                                  height: Number(e.target.value),
+                                }))
+                              }
+                              className="w-full mt-1 px-2 py-1 text-sm border rounded"
+                            />
+                          </div>
+                        </div>
+                      )}
+                    {option.id === "compress" &&
+                      selectedProcessing.includes("compress") && (
+                        <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm">
+                          <div className="flex justify-between mb-1">
+                            <label className="text-xs font-semibold text-slate-500">
+                              Quality
+                            </label>
+                            <span className="text-xs font-bold text-blue-600">
+                              {compressionQuality}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min="10"
+                            max="100"
+                            step="5"
+                            value={compressionQuality}
+                            onChange={(e) =>
+                              setCompressionQuality(Number(e.target.value))
+                            }
+                            className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
                           />
+                          <p className="text-[10px] text-slate-400 mt-1">
+                            Lower % = Smaller file size, lower quality.
+                          </p>
                         </div>
-                        <div>
-                          <label className="text-xs font-semibold text-slate-500">Height (px)</label>
-                          <input 
-                            type="number" 
-                            value={resizeDims.height}
-                            onChange={(e) => setResizeDims(prev => ({...prev, height: Number(e.target.value)}))}
-                            className="w-full mt-1 px-2 py-1 text-sm border rounded"
-                          />
-                        </div>
-                      </div>
-                    )}
-                    {option.id === "compress" && selectedProcessing.includes("compress") && (
-                      <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm">
-                        <div className="flex justify-between mb-1">
-                          <label className="text-xs font-semibold text-slate-500">Quality</label>
-                          <span className="text-xs font-bold text-blue-600">{compressionQuality}%</span>
-                        </div>
-                        <input
-                          type="range"
-                          min="10"
-                          max="100"
-                          step="5"
-                          value={compressionQuality}
-                          onChange={(e) => setCompressionQuality(Number(e.target.value))}
-                          className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                        />
-                        <p className="text-[10px] text-slate-400 mt-1">
-                          Lower % = Smaller file size, lower quality.
-                        </p>
-                      </div>
-                    )}
+                      )}
                   </div>
                 ))}
               </div>
