@@ -15,6 +15,8 @@ import { AugmentedReality } from './components/AugmentedReality';
 import { PromotionalTags } from './components/PromotionalTags';
 import { AIPromptOptimization } from './components/AIPromptOptimization';
 import { ClientManagement } from './components/ClientManagement';
+import { ToastContainer, Bounce } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 function AppContent() {
   const { user, loading } = useAuth();
@@ -37,6 +39,19 @@ function AppContent() {
 
   return (
     <Layout currentView={currentView} onNavigate={setCurrentView}>
+      <ToastContainer
+        position="top-center"
+        autoClose={5000}
+        hideProgressBar={false}
+        newestOnTop={false}
+        closeOnClick={false}
+        rtl={false}
+        pauseOnFocusLoss
+        draggable
+        pauseOnHover
+        theme="dark"
+        transition={Bounce}
+      />
       <div className="space-y-6">
         {currentView === 'dashboard' && <Dashboard />}
 
