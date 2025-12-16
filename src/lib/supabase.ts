@@ -37,5 +37,7 @@ export interface Measurement {
   text_position: 'top' | 'bottom' | 'left' | 'right';
   line_width: number;
   created_at: string;
+  text_offset_x?:number;
+  text_offset_y?:number
 }
 export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);

@@ -3,25 +3,8 @@ import { useState, useEffect, useRef } from "react";
 import { Toolbar } from "./Toolbar";
 import { MeasurementList } from "./MeasurementList";
 import { MeasurementCanvas } from "./MeasurementCanvas";
+import { Measurement } from "../lib/supabase";
 
-interface Measurement {
-  id: string;
-  tool_type: string;
-  start_x: number;
-  start_y: number;
-  end_x: number;
-  end_y: number;
-  pixel_length: number;
-  actual_value: string | null;
-  unit: string;
-  label: string | null;
-  color: string;
-  point_style: "round" | "arrow" | "square" | "diamond";
-  text_position: "top" | "bottom" | "left" | "right";
-  line_width: number;
-  font_size: number;
-  pointer_width: number;
-}
 
 interface MeasurementModalProps {
   imageUrl: string;
@@ -100,21 +83,17 @@ export function MeasurementModal({
   };
 
 const handleSave = () => {
-  // Create a new canvas at ORIGINAL image dimensions
   const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = imageSize.width;   // Original width
-  exportCanvas.height = imageSize.height; // Original height
+  exportCanvas.width = imageSize.width;
+  exportCanvas.height = imageSize.height;
   const ctx = exportCanvas.getContext('2d');
   
   if (ctx) {
-    // Load and draw the original image
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      // Draw image at full size
       ctx.drawImage(img, 0, 0, imageSize.width, imageSize.height);
       
-      // Draw all measurements at original coordinates (no scaling needed)
       measurements.forEach((m) => {
         // Draw line
         ctx.strokeStyle = m.color || '#000000';
@@ -130,46 +109,70 @@ const handleSave = () => {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
         
-        // Start point
         ctx.beginPath();
         ctx.arc(m.start_x, m.start_y, pointerSize, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         
-        // End point
         ctx.beginPath();
         ctx.arc(m.end_x, m.end_y, pointerSize, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         
-        // Draw label
+        // Draw label at correct position
         const midX = (m.start_x + m.end_x) / 2;
         const midY = (m.start_y + m.end_y) / 2;
         
-        const text = m.actual_value
-          ? `${m.actual_value}${m.label ? ` - ${m.label}` : ''}`
-          : `${m.pixel_length.toFixed(1)}px${m.label ? ` - ${m.label}` : ''}`;
-        
-        const offsetDistance = 20;
-        let textX = midX;
-        let textY = midY;
-        
-        switch (m.text_position) {
-          case 'top': textY = midY - offsetDistance; break;
-          case 'bottom': textY = midY + offsetDistance; break;
-          case 'left': textX = midX - offsetDistance; break;
-          case 'right': textX = midX + offsetDistance; break;
-        }
+        const valueText = m.actual_value || `${m.pixel_length.toFixed(1)}px`;
+        const labelSuffix = m.label ? ` - ${m.label}` : '';
+        const fullText = `${valueText}${labelSuffix}`;
+        const lines = fullText.split('\n');
         
         const fontSize = m.font_size || 14;
+        const lineHeight = fontSize + 4;
+        
+        let baseX = midX;
+        let baseY = midY;
+        
+        // USE CUSTOM OFFSET IF EXISTS
+        if (m.text_offset_x !== undefined && m.text_offset_y !== undefined) {
+          baseX = midX + m.text_offset_x;
+          baseY = midY + m.text_offset_y;
+        } else {
+          const offsetDistance = 20;
+          switch (m.text_position) {
+            case 'top':
+              baseY = midY - offsetDistance;
+              break;
+            case 'bottom':
+              baseY = midY + offsetDistance;
+              break;
+            case 'left':
+              baseX = midX - offsetDistance;
+              break;
+            case 'right':
+              baseX = midX + offsetDistance;
+              break;
+          }
+        }
+        
+        // Adjust for multi-line centering
+        baseY = baseY - ((lines.length - 1) * lineHeight) / 2;
+        
         ctx.font = `${fontSize}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.strokeStyle = '#fff';
-        ctx.lineWidth = 3;
-        ctx.strokeText(text, textX, textY);
-        ctx.fillStyle = '#000';
-        ctx.fillText(text, textX, textY);
+        
+        lines.forEach((line, index) => {
+          const textY = baseY + (index * lineHeight);
+          
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 3;
+          ctx.strokeText(line, baseX, textY);
+          
+          ctx.fillStyle = '#000';
+          ctx.fillText(line, baseX, textY);
+        });
       });
       
       const annotatedImageURL = exportCanvas.toDataURL('image/png');

@@ -44,6 +44,7 @@ export function MeasurementCanvas({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
+  const [draggingTextId,setDraggingTextId]=useState<string|null>(null)
   const [startPoint, setStartPoint] = useState<{ x: number; y: number } | null>(
     null
   );
@@ -58,7 +59,44 @@ export function MeasurementCanvas({
     string | null
   >(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
+ const isNearText = (
+  mouseX: number,
+  mouseY: number,
+  m: Measurement
+): boolean => {
+  const x1 = m.start_x * scale + offset.x;
+  const y1 = m.start_y * scale + offset.y;
+  const x2 = m.end_x * scale + offset.x;
+  const y2 = m.end_y * scale + offset.y;
 
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
+
+  let textX = midX;
+  let textY = midY;
+
+  // Check for custom offset
+  if (m.text_offset_x !== undefined && m.text_offset_y !== undefined) {
+    textX = midX + m.text_offset_x * scale;
+    textY = midY + m.text_offset_y * scale;
+  } else {
+    const offsetDistance = 20;
+    switch (m.text_position) {
+      case "top": textY = midY - offsetDistance; break;
+      case "bottom": textY = midY + offsetDistance; break;
+      case "left": textX = midX - offsetDistance; break;
+      case "right": textX = midX + offsetDistance; break;
+    }
+  }
+
+  const threshold = 30;
+  return (
+    mouseX >= textX - threshold &&
+    mouseX <= textX + threshold &&
+    mouseY >= textY - threshold &&
+    mouseY <= textY + threshold
+  );
+};
   useEffect(() => {
     const img = new Image();
     img.onload = () => {
@@ -104,6 +142,7 @@ export function MeasurementCanvas({
     editingId,
     editValues,
     draggingMeasurementId,
+    draggingTextId
   ]);
 
   const drawCanvas = () => {
@@ -248,55 +287,58 @@ export function MeasurementCanvas({
     }
   };
 
-  const drawLabel = (
-    ctx: CanvasRenderingContext2D,
-    m: Measurement,
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number
-  ) => {
-    const midX = (x1 + x2) / 2;
-    const midY = (y1 + y2) / 2;
+const drawLabel = (
+  ctx: CanvasRenderingContext2D,
+  m: Measurement,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+) => {
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
 
-    const text = m.actual_value
-      ? `${m.actual_value}${m.label ? ` - ${m.label}` : ""}`
-      : `${m.pixel_length.toFixed(1)}px${m.label ? ` - ${m.label}` : ""}`;
+  const text = m.actual_value
+    ? `${m.actual_value}${m.label ? ` - ${m.label}` : ""}`
+    : `${m.pixel_length.toFixed(1)}px${m.label ? ` - ${m.label}` : ""}`;
 
+  let textX = midX;
+  let textY = midY;
+
+  // Check for custom offset (dragged position)
+  if (m.text_offset_x !== undefined && m.text_offset_y !== undefined) {
+    // Use custom dragged position (scale the offset for display)
+    textX = midX + m.text_offset_x * scale;
+    textY = midY + m.text_offset_y * scale;
+  } else {
+    // Use default position based on text_position setting
     const offsetDistance = 20;
-
-    let textX = midX;
-    let textY = midY;
-
     switch (m.text_position) {
-      case "top":
-        textX = midX;
-        textY = midY - offsetDistance;
-        break;
-      case "bottom":
-        textX = midX;
-        textY = midY + offsetDistance;
-        break;
-      case "left":
-        textX = midX - offsetDistance;
-        textY = midY;
-        break;
-      case "right":
-        textX = midX + offsetDistance;
-        textY = midY;
-        break;
+      case "top": textY = midY - offsetDistance; break;
+      case "bottom": textY = midY + offsetDistance; break;
+      case "left": textX = midX - offsetDistance; break;
+      case "right": textX = midX + offsetDistance; break;
     }
+  }
 
-    const fontSize = m.font_size || 14;
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.fillStyle = "#000";
+  // Rest of drawing code...
+  const fontSize = m.font_size || 14;
+  ctx.font = `${fontSize}px sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const lines = text.split('\n');
+  const lineHeight = fontSize + 4;
+
+  lines.forEach((line, index) => {
+    const lineY = textY + (index - (lines.length - 1) / 2) * lineHeight;
     ctx.strokeStyle = "#fff";
     ctx.lineWidth = 3;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.strokeText(text, textX, textY);
-    ctx.fillText(text, textX, textY);
-  };
+    ctx.strokeText(line, textX, lineY);
+    ctx.fillStyle = "#000";
+    ctx.fillText(line, textX, lineY);
+  });
+};
   const drawTemporaryLine = (
     ctx: CanvasRenderingContext2D,
     start: { x: number; y: number },
@@ -363,7 +405,15 @@ export function MeasurementCanvas({
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvasCoords = getCanvasCoordinates(e);
-
+    for(const m of measurements)
+    {
+        if(isNearText(canvasCoords.x,canvasCoords.y,m))
+        {
+            setDraggingTextId(m.id)
+            onMeasurementSelect(m.id)
+            return
+        }
+    }
     if (activeTool === "select") {
       const selectedMeasurement = measurements.find(
         (m) => m.id === selectedMeasurementId
@@ -416,6 +466,37 @@ export function MeasurementCanvas({
     if (!canvas) return;
 
     const coords = getCanvasCoordinates(e);
+     if (draggingTextId) {
+    const m = measurements.find((m) => m.id === draggingTextId);
+    if (m) {
+      const x1 = m.start_x * scale + offset.x;
+      const y1 = m.start_y * scale + offset.y;
+      const x2 = m.end_x * scale + offset.x;
+      const y2 = m.end_y * scale + offset.y;
+      const midX = (x1 + x2) / 2;
+      const midY = (y1 + y2) / 2;
+      const offsetX=(coords.x-midX)/scale
+      const offsetY=(coords.y-midY)/scale
+      onMeasurementUpdate(draggingTextId,{
+        text_offset_y:offsetY,
+        text_offset_x:offsetX
+      })
+    }
+    return;
+  }
+
+  // Update cursor based on what's being hovered
+  let cursorSet = false;
+  for (const m of measurements) {
+    if (isNearText(coords.x, coords.y, m)) {
+      canvas.style.cursor = "move";
+      cursorSet = true;
+      break;
+    }
+  }
+  if (!cursorSet) {
+    canvas.style.cursor = activeTool === "select" ? "default" : "crosshair";
+  }
 
     if (draggingPoint && draggingMeasurementId) {
       const measurement = measurements.find(
@@ -475,6 +556,10 @@ export function MeasurementCanvas({
   };
 
   const handleMouseUp = () => {
+    if (draggingTextId) {
+    setDraggingTextId(null);
+    return;
+  }
     if (draggingPoint) {
       setDraggingPoint(null);
       setDraggingMeasurementId(null);

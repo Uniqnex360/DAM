@@ -351,7 +351,59 @@ export function AdvancedUpload() {
 
     try {
       let result;
+      const isOnlyLineDiagram = 
+      selectedProcessing.length === 1 && 
+      selectedProcessing.includes("line-diagram") &&
+      lineDiagramResults.length > 0;
 
+    if (isOnlyLineDiagram) {
+      // Upload only the annotated images
+      console.log("Uploading annotated images only...");
+      
+      const annotatedFiles = await Promise.all(
+        lineDiagramResults.map(async (diagramResult) => {
+          if (diagramResult.annotatedImageUrl) {
+            const response = await fetch(diagramResult.annotatedImageUrl);
+            const blob = await response.blob();
+            return new File(
+              [blob],
+              `${diagramResult.imageName.replace(/\.[^/.]+$/, "")}_annotated.png`,
+              { type: "image/png" }
+            );
+          }
+          return null;
+        })
+      );
+
+      const validFiles = annotatedFiles.filter((f): f is File => f !== null);
+      
+      if (validFiles.length > 0) {
+        result = await api.uploadImages(validFiles);
+        
+        // Add measurement data to each uploaded image
+        if (result?.images) {
+          result.images = result.images.map((img: any, index: number) => ({
+            ...img,
+            hasLineDiagram: true,
+            measurements: lineDiagramResults[index]?.measurements || [],
+            measurementCount: lineDiagramResults[index]?.measurements?.length || 0,
+          }));
+          
+          result.lineDiagramSummary = {
+            totalProcessed: result.images.length,
+            images: result.images.map((img: any) => ({
+              id: img.id,
+              originalUrl: img.url,
+              annotatedUrl: img.cloudinaryUrl || img.url,
+              measurementCount: img.measurementCount,
+              measurements: img.measurements,
+            })),
+          };
+        }
+      }
+    }
+    else
+      { 
       switch (uploadSource) {
         case "files": {
           const files = await Promise.all(
@@ -425,7 +477,7 @@ export function AdvancedUpload() {
         default:
           throw new Error("Invalid upload source");
       }
-
+    }
       const activeOperations: (
         | "bg-remove"
         | "resize"
@@ -1720,7 +1772,6 @@ export function AdvancedUpload() {
                           </div>
                         </div>
 
-                        {/* Measurements List */}
                         {img.measurements && img.measurements.length > 0 && (
                           <div className="space-y-2">
                             <div className="text-sm font-medium text-slate-700 mb-2">
