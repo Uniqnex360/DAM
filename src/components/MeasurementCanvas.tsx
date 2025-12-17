@@ -42,6 +42,8 @@ export function MeasurementCanvas({
   editValues,
 }: MeasurementCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [isPanning, setIsPanning] = useState(false);
+  const [panStart, setPanStart] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [draggingTextId,setDraggingTextId]=useState<string|null>(null)
@@ -123,7 +125,34 @@ export function MeasurementCanvas({
       y: (containerHeight - imageHeight * newScale) / 2,
     });
   };
+const handleZoom = (zoomIn: boolean, centerX?: number, centerY?: number) => {
+  const canvas = canvasRef.current;
+  if (!canvas) return;
 
+  const zoomFactor = zoomIn ? 1.2 : 0.8;
+  const newScale = Math.max(0.1, Math.min(10, scale * zoomFactor));
+
+  // Use provided center or canvas center
+  const zoomCenterX = centerX ?? canvas.width / 2;
+  const zoomCenterY = centerY ?? canvas.height / 2;
+
+  // Calculate the image point under the zoom center
+  const imageX = (zoomCenterX - offset.x) / scale;
+  const imageY = (zoomCenterY - offset.y) / scale;
+
+  // Calculate new offset to keep the same point under the cursor
+  const newOffsetX = zoomCenterX - imageX * newScale;
+  const newOffsetY = zoomCenterY - imageY * newScale;
+
+  setScale(newScale);
+  setOffset({ x: newOffsetX, y: newOffsetY });
+};
+
+const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+  e.preventDefault();
+  const coords = getCanvasCoordinates(e as any);
+  handleZoom(e.deltaY < 0, coords.x, coords.y);
+};
   useEffect(() => {
     fitImageToCanvas();
     window.addEventListener("resize", fitImageToCanvas);
@@ -145,48 +174,69 @@ export function MeasurementCanvas({
     draggingTextId
   ]);
 
-  const drawCanvas = () => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx || !imageRef.current) return;
+const drawCanvas = () => {
+  const canvas = canvasRef.current;
+  const ctx = canvas?.getContext("2d");
+  if (!canvas || !ctx || !imageRef.current) return;
 
-    canvas.width = containerRef.current?.clientWidth || 800;
-    canvas.height = containerRef.current?.clientHeight || 600;
+  canvas.width = containerRef.current?.clientWidth || 800;
+  canvas.height = containerRef.current?.clientHeight || 600;
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Draw canvas background (stays fixed)
+  ctx.fillStyle = "#f3f4f6"; // Light gray background
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    ctx.drawImage(
-      imageRef.current,
-      offset.x,
-      offset.y,
-      imageWidth * scale,
-      imageHeight * scale
-    );
+  // Draw a subtle grid pattern (optional)
+  ctx.strokeStyle = "#e5e7eb";
+  ctx.lineWidth = 1;
+  const gridSize = 20;
+  for (let x = 0; x < canvas.width; x += gridSize) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvas.height);
+    ctx.stroke();
+  }
+  for (let y = 0; y < canvas.height; y += gridSize) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(canvas.width, y);
+    ctx.stroke();
+  }
 
-    measurements.forEach((m) => {
-      const isSelected = m.id === selectedMeasurementId;
-      if (m.id === editingId && editValues) {
-        const previewMeasurement: Measurement = {
-          ...m,
-          actual_value: editValues.actual_value || null,
-          label: editValues.label || null,
-          color: editValues.color,
-          point_style: editValues.point_style,
-          text_position: editValues.text_position,
-          line_width: editValues.line_width,
-          font_size: editValues.font_size,
-          pointer_width: editValues.pointer_width,
-        };
-        drawMeasurement(ctx, previewMeasurement, isSelected);
-      } else {
-        drawMeasurement(ctx, m, isSelected);
-      }
-    });
+  // Draw the image with zoom applied
+  ctx.drawImage(
+    imageRef.current,
+    offset.x,
+    offset.y,
+    imageWidth * scale,
+    imageHeight * scale
+  );
 
-    if (startPoint && currentPoint && activeTool !== "select") {
-      drawTemporaryLine(ctx, startPoint, currentPoint);
+  // Draw measurements
+  measurements.forEach((m) => {
+    const isSelected = m.id === selectedMeasurementId;
+    if (m.id === editingId && editValues) {
+      const previewMeasurement: Measurement = {
+        ...m,
+        actual_value: editValues.actual_value || null,
+        label: editValues.label || null,
+        color: editValues.color,
+        point_style: editValues.point_style,
+        text_position: editValues.text_position,
+        line_width: editValues.line_width,
+        font_size: editValues.font_size,
+        pointer_width: editValues.pointer_width,
+      };
+      drawMeasurement(ctx, previewMeasurement, isSelected);
+    } else {
+      drawMeasurement(ctx, m, isSelected);
     }
-  };
+  });
+
+  if (startPoint && currentPoint && activeTool !== "select") {
+    drawTemporaryLine(ctx, startPoint, currentPoint);
+  }
+};
 
   const drawMeasurement = (
     ctx: CanvasRenderingContext2D,
@@ -405,6 +455,11 @@ const drawLabel = (
 
   const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvasCoords = getCanvasCoordinates(e);
+     if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+    setIsPanning(true);
+    setPanStart(canvasCoords);
+    return;
+  }
     for(const m of measurements)
     {
         if(isNearText(canvasCoords.x,canvasCoords.y,m))
@@ -466,6 +521,16 @@ const drawLabel = (
     if (!canvas) return;
 
     const coords = getCanvasCoordinates(e);
+     if (isPanning && panStart) {
+    const dx = coords.x - panStart.x;
+    const dy = coords.y - panStart.y;
+    setOffset({
+      x: offset.x + dx,
+      y: offset.y + dy,
+    });
+    setPanStart(coords);
+    return;
+  }
      if (draggingTextId) {
     const m = measurements.find((m) => m.id === draggingTextId);
     if (m) {
@@ -556,6 +621,11 @@ const drawLabel = (
   };
 
   const handleMouseUp = () => {
+    if (isPanning) {
+    setIsPanning(false);
+    setPanStart(null);
+    return;
+  }
     if (draggingTextId) {
     setDraggingTextId(null);
     return;
@@ -643,19 +713,55 @@ const drawLabel = (
   return (
     <div
       ref={containerRef}
-      className="w-full h-full bg-gray-100 rounded-lg overflow-hidden"
+      className="w-full h-full bg-slate-50 rounded-lg overflow-hidden relative"
     >
+      <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white rounded-lg shadow-lg p-2">
+    <button
+      onClick={() => handleZoom(true)}
+      className="p-2 hover:bg-slate-100 rounded transition-colors"
+      title="Zoom In (Scroll Up)"
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v6m3-3H7" />
+      </svg>
+    </button>
+    <button
+      onClick={() => handleZoom(false)}
+      className="p-2 hover:bg-slate-100 rounded transition-colors"
+      title="Zoom Out (Scroll Down)"
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM13 10H7" />
+      </svg>
+    </button>
+    <button
+      onClick={fitImageToCanvas}
+      className="p-2 hover:bg-slate-100 rounded transition-colors"
+      title="Fit to Screen"
+    >
+      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+      </svg>
+    </button>
+    <div className="text-xs text-center py-1 border-t">
+      {Math.round(scale * 100)}%
+    </div>
+  </div>
+  
       <canvas
         ref={canvasRef}
         className={
-          activeTool === "select" && selectedMeasurementId
-            ? "cursor-grab"
-            : "cursor-crosshair"
-        }
+    isPanning
+      ? "cursor-grabbing"
+      : activeTool === "select" && selectedMeasurementId
+      ? "cursor-grab"
+      : "cursor-crosshair"
+  }
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        onWheel={handleWheel}
       />
     </div>
   );
