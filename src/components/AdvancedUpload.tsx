@@ -11,6 +11,10 @@ import {
   Wand2,
   Crop,
   Ruler,
+  Palette,
+  X,
+  ArrowRight,
+  Sparkles,
 } from "lucide-react";
 import { api } from "../services/api";
 import { ImageCropModal } from "./ImageCropModal";
@@ -119,6 +123,7 @@ export function AdvancedUpload() {
   const [editingImage, setEditingImage] = useState<ImageItem | null>(null);
   const [uploadResult, setUploadResult] = useState<any>(null);
   const [error, setError] = useState<string>("");
+  const [isApplyingRecolor, setIsApplyingRecolor] = useState(false);
   const [autoDetect, setAutoDetect] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [currentAnalysis, setCurrentAnalysis] = useState<any>(null);
@@ -132,6 +137,11 @@ export function AdvancedUpload() {
   const [autoFixError, setAutoFixError] = useState<string | null>(null);
   const [productPageUrl, setProductPageUrl] = useState("");
   const [isGeneratingInfographic, setIsGeneratingInfographic] = useState(false);
+  const [recoloringImage, setRecoloringImage] = useState<ImageItem | null>(
+    null
+  );
+  const [pickedColor, setPickedColor] = useState("#000000");
+  const [replaceColor, setReplaceColor] = useState("#ff0000");
   const [isAnalyzingForInfographic, setIsAnalyzingForInfographic] =
     useState(false);
   const [cloudProvider, setCloudProvider] = useState<
@@ -147,7 +157,147 @@ export function AdvancedUpload() {
       setDragActive(false);
     }
   }, []);
+  const pickColorFromImage = () => {
+  const img = document.getElementById('original-image');
+  if (!img) return;
   
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+  
+  ctx.drawImage(img, 0, 0);
+  
+  const x = canvas.width / 2;
+  const y = canvas.height / 2;
+  const pixel = ctx.getImageData(x, y, 1, 1).data;
+  
+  const hex = '#' + 
+    pixel[0].toString(16).padStart(2, '0') +
+    pixel[1].toString(16).padStart(2, '0') +
+    pixel[2].toString(16).padStart(2, '0');
+  
+  setPickedColor(hex.toUpperCase());
+};
+
+const getRecoloredPreviewUrl = (): string => {
+  if (!recoloringImage) return '';
+  
+  if (recoloringImage.cloudinaryUrl) {
+    const fromColor = pickedColor.replace('#', '').toLowerCase();
+    const toColor = replaceColor.replace('#', '').toLowerCase();
+    
+    return `${recoloringImage.cloudinaryUrl}?e_replace_color:${fromColor}:${toColor}:30`;
+  }
+  
+  return recoloringImage.preview || recoloringImage.url || '';
+};
+
+const hexToRgb = (hex:string):[number,number,number] => {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return result ? [
+    parseInt(result[1], 16),
+    parseInt(result[2], 16),
+    parseInt(result[3], 16)
+  ] : [0, 0, 0];
+};
+
+const colorDistance = (rgb1:number[], rgb2:number[]):number => {
+  return Math.sqrt(
+    Math.pow(rgb1[0] - rgb2[0], 2) +
+    Math.pow(rgb1[1] - rgb2[1], 2) +
+    Math.pow(rgb1[2] - rgb2[2], 2)
+  );
+};
+
+const applyRecoloring = async () => {
+  setIsApplyingRecolor(true);
+  
+  try {
+    // STEP 1: Check if this is a new image that needs uploading
+    let imageRecord = recoloringImage;
+    
+    // If the image is a blob (not yet uploaded), upload it first
+    if (recoloringImage.url.startsWith('blob:') || recoloringImage.file) {
+      toast.info('Uploading image to Cloudinary first...');
+      
+      // Get the actual file
+      let fileToUpload;
+      if (recoloringImage.file) {
+        fileToUpload = recoloringImage.file;
+      } else {
+        // Convert blob URL to file
+        const response = await fetch(recoloringImage.url);
+        const blob = await response.blob();
+        const fileExt = recoloringImage.name.split('.').pop() || 'png';
+        fileToUpload = new File([blob], recoloringImage.name, { 
+          type: blob.type || `image/${fileExt}` 
+        });
+      }
+      
+      // Upload to Cloudinary
+      const uploadResponse = await api.uploadImages([fileToUpload]);
+      
+      if (!uploadResponse || !uploadResponse.images || uploadResponse.images.length === 0) {
+        throw new Error('Failed to upload image to Cloudinary');
+      }
+      
+      // Update the image record with Cloudinary URL
+      imageRecord = {
+        ...recoloringImage,
+        id: uploadResponse.images[0].id,
+        cloudinaryUrl: uploadResponse.images[0].cloudinaryUrl,
+        url: uploadResponse.images[0].url || uploadResponse.images[0].cloudinaryUrl
+      };
+      
+      toast.success('Image uploaded to Cloudinary successfully!');
+    }
+    
+    // STEP 2: Now process the image with recolor
+    const imageUrlToProcess = imageRecord.cloudinaryUrl || imageRecord.url;
+    
+    const response = await api.processImageAI(
+      imageRecord.id,
+      imageUrlToProcess,
+      'recolor',
+      imageRecord.name,
+      {
+        fromColor: pickedColor,
+        toColor: replaceColor,
+        tolerance: 20
+      }
+    );
+    
+    if (response && response.url) {
+      toast.success('Image recolored successfully!');
+      
+      // Update the image in the local state
+      setImages(prev => prev.map(img => 
+        img.id === recoloringImage?.id 
+          ? { 
+              ...img, 
+              cloudinaryUrl: response.url, 
+              url: response.url,
+              isProcessed: true 
+            }
+          : img
+      ));
+      
+      setRecoloringImage(null);
+      
+      window.dispatchEvent(new CustomEvent('image-updated'));
+    } else {
+      throw new Error('Recoloring failed');
+    }
+  } catch (error) {
+    console.error('Recoloring error:', error);
+    toast.error('Failed to recolor image: ' + error.message);
+  } finally {
+    setIsApplyingRecolor(false);
+  }
+};
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -188,7 +338,9 @@ export function AdvancedUpload() {
       id: `${Date.now()}-${idx}`,
       url: URL.createObjectURL(file),
       name: file.name,
-      preview:file.type.startsWith('image/')? URL.createObjectURL(file):'/pdf-icon.svg',
+      preview: file.type.startsWith("image/")
+        ? URL.createObjectURL(file)
+        : "/pdf-icon.svg",
       file: file,
     }));
     setImages((prev) => [...prev, ...newImages]);
@@ -306,6 +458,35 @@ export function AdvancedUpload() {
     );
     setEditingImage(null);
   };
+  const handleImageColorPick = (e: React.MouseEvent<HTMLImageElement>) => {
+  const img = e.currentTarget;
+  const rect = img.getBoundingClientRect();
+  
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  
+  if (!ctx) return;
+  
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  
+  const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
+  const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
+  
+  const pixel = ctx.getImageData(x, y, 1, 1).data;
+  
+  const hex = '#' + 
+    pixel[0].toString(16).padStart(2, '0') +
+    pixel[1].toString(16).padStart(2, '0') +
+    pixel[2].toString(16).padStart(2, '0');
+  
+  setPickedColor(hex.toUpperCase());
+  
+  // Show feedback
+  toast.success(`Picked color: ${hex.toUpperCase()}`);
+};
   const handleUrlsAdd = async () => {
     const urls = urlInput.split("\n").filter((u) => u.trim());
     const tempIds = urls.map((_, i) => `url-${Date.now()}-${i}`);
@@ -352,29 +533,39 @@ export function AdvancedUpload() {
     setImages((prev) => [...prev, ...newImages]);
   };
   const isPdfFile = (file) => {
-  return (
-    file.type === 'application/pdf' ||
-    file.file_type === 'application/pdf' ||
-    (file.name && file.name.toLowerCase().endsWith('.pdf')) ||
-    file.resource_type === 'raw' ||
-    (file.url && file.url.toLowerCase().includes('.pdf'))
-  );
-};
-const isImgFile=(file)=>{
-  return (
-    (file.type && file.type.startsWith('image/'))||(file.file_type && file.file_type.startsWith('image/'))||(!isPdfFile(file)&& file.preview && file.preview !=='/pdf-icon.svg')
-  )
-}
+    return (
+      file.type === "application/pdf" ||
+      file.file_type === "application/pdf" ||
+      (file.name && file.name.toLowerCase().endsWith(".pdf")) ||
+      file.resource_type === "raw" ||
+      (file.url && file.url.toLowerCase().includes(".pdf"))
+    );
+  };
+  const isImgFile = (file) => {
+    return (
+      (file.type && file.type.startsWith("image/")) ||
+      (file.file_type && file.file_type.startsWith("image/")) ||
+      (!isPdfFile(file) && file.preview && file.preview !== "/pdf-icon.svg")
+    );
+  };
   const toggleProcessing = (processingId: string) => {
-    if(processingId==='pdf-extract' && !images.some(img=>isPdfFile(img)))
-    {
-      toast.error("PDF extraction can only be performed on PDF files")
-      return 
+    if (
+      processingId === "pdf-extract" &&
+      !images.some((img) => isPdfFile(img))
+    ) {
+      toast.error("PDF extraction can only be performed on PDF files");
+      return;
     }
-    if(processingId!=='pdf-extract' && !images.some(img=>isImgFile(img)))
-    {
-      toast.error(`${PROCESSING_OPTIONS.find(op => op.id === processingId)?.label} can only be performed on image files`);
-      return
+    if (
+      processingId !== "pdf-extract" &&
+      !images.some((img) => isImgFile(img))
+    ) {
+      toast.error(
+        `${
+          PROCESSING_OPTIONS.find((op) => op.id === processingId)?.label
+        } can only be performed on image files`
+      );
+      return;
     }
     setSelectedProcessing((prev) =>
       prev.includes(processingId)
@@ -415,13 +606,11 @@ const isImgFile=(file)=>{
             return null;
           })
         );
-        if(selectedProcessing.includes('pdf-extract'))
-        {
-          const hasPdfs=images.some(img=>isPdfFile(img))
-          if(!hasPdfs)
-          {
-            toast.error("PDF extraction can only be performed on PDF files")
-            return
+        if (selectedProcessing.includes("pdf-extract")) {
+          const hasPdfs = images.some((img) => isPdfFile(img));
+          if (!hasPdfs) {
+            toast.error("PDF extraction can only be performed on PDF files");
+            return;
           }
         }
         const validFiles = annotatedFiles.filter((f): f is File => f !== null);
@@ -554,13 +743,18 @@ const isImgFile=(file)=>{
       if (activeOperations.length > 0 && result?.images) {
         try {
           console.log(`Initiating processes: ${activeOperations.join(", ")}`);
-          const pdfOperations=activeOperations.filter(op=>op==='pdf-extract')
-           const imgOperations = activeOperations.filter(op=>op!=='pdf-extract')
+          const pdfOperations = activeOperations.filter(
+            (op) => op === "pdf-extract"
+          );
+          const imgOperations = activeOperations.filter(
+            (op) => op !== "pdf-extract"
+          );
           await Promise.all(
             result.images.map(async (uploadedImage: any, index: number) => {
               const originalImage = images[index];
-              if(!originalImage)return
-              let currentSourceUrl =uploadedImage.cloudinaryUrl || uploadedImage.url;
+              if (!originalImage) return;
+              let currentSourceUrl =
+                uploadedImage.cloudinaryUrl || uploadedImage.url;
               const originalName = originalImage.name || uploadedImage.id;
 
               // if (uploadSource === "files") {
@@ -573,85 +767,86 @@ const isImgFile=(file)=>{
 
               const processedOps: string[] = [];
               const failedOps: string[] = [];
-              if(isPdfFile(originalImage) && pdfOperations.length>0)
-              {
-                 console.log(`Processing PDF operations for ${originalName}`);
-                 for (const op of pdfOperations) {
-              try {
-                const response = await api.processImageAI(
-                  uploadedImage.id,
-                  currentSourceUrl,
-                  op,
-                  originalName,
-                  {}
-                );
-                
-                if (response && response.url) {
-                  currentSourceUrl = response.url;
-                  processedOps.push(op);
-                } else {
-                  throw new Error(`No output URL from ${op}`);
-                }
-              } catch (error: any) {
-                console.error(`Operation "${op}" FAILED on ${originalName}:`, error.message);
-                failedOps.push(op);
-              }
-            }
-          }
-          if (isImgFile(originalImage) && imgOperations.length > 0) {
-            console.log(`Processing image operations for ${originalName}`);
-              for (const op of imgOperations) {
-  
-                let options = {};
-                if (op === "resize") options = resizeDims;
-                if (op === "compress")
-                  options = { quality: compressionQuality };
-                try {
-                  const response = await api.processImageAI(
-                    uploadedImage.id,
-                    currentSourceUrl,
-                    op,
-                    originalName,
-                    options
-                  );
+              if (isPdfFile(originalImage) && pdfOperations.length > 0) {
+                console.log(`Processing PDF operations for ${originalName}`);
+                for (const op of pdfOperations) {
+                  try {
+                    const response = await api.processImageAI(
+                      uploadedImage.id,
+                      currentSourceUrl,
+                      op,
+                      originalName,
+                      {}
+                    );
 
-                  if (response && response.url) {
-                    currentSourceUrl = response.url;
-                    processedOps.push(op);
-                  } else {
-                    throw new Error(`No output URL from ${op}`);
+                    if (response && response.url) {
+                      currentSourceUrl = response.url;
+                      processedOps.push(op);
+                    } else {
+                      throw new Error(`No output URL from ${op}`);
+                    }
+                  } catch (error: any) {
+                    console.error(
+                      `Operation "${op}" FAILED on ${originalName}:`,
+                      error.message
+                    );
+                    failedOps.push(op);
                   }
-                } catch (error: any) {
-                  console.error(
-                    ` Operation "${op}" FAILED on ${originalName}:`,
-                    error.message
-                  );
-                  failedOps.push(op);
                 }
               }
+              if (isImgFile(originalImage) && imgOperations.length > 0) {
+                console.log(`Processing image operations for ${originalName}`);
+                for (const op of imgOperations) {
+                  let options = {};
+                  if (op === "resize") options = resizeDims;
+                  if (op === "compress")
+                    options = { quality: compressionQuality };
+                  try {
+                    const response = await api.processImageAI(
+                      uploadedImage.id,
+                      currentSourceUrl,
+                      op,
+                      originalName,
+                      options
+                    );
 
-              // Update the image URL with the final processed result
-              if (failedOps.length === 0 && processedOps.length > 0) {
-                uploadedImage.cloudinaryUrl = currentSourceUrl;
-                uploadedImage.url = currentSourceUrl;
-                uploadedImage.isProcessed = true;
-                uploadedImage.processedOperations = processedOps;
-                uploadedImage.processingStatus = "success";
-              } else {
-                uploadedImage.isProcessed = false;
-                uploadedImage.processingStatus =
-                  failedOps.length === activeOperations.length
-                    ? "failed"
-                    : "partial_failure";
-                uploadedImage.processedOperations = processedOps;
-                uploadedImage.failedOperations = failedOps;
-                setError((prev) =>
-                  prev
-                    ? `${prev}\n${originalName}: ${failedOps.join(", ")}`
-                    : `${originalName}: ${failedOps.join(", ")}`
-                );
+                    if (response && response.url) {
+                      currentSourceUrl = response.url;
+                      processedOps.push(op);
+                    } else {
+                      throw new Error(`No output URL from ${op}`);
+                    }
+                  } catch (error: any) {
+                    console.error(
+                      ` Operation "${op}" FAILED on ${originalName}:`,
+                      error.message
+                    );
+                    failedOps.push(op);
+                  }
+                }
+
+                // Update the image URL with the final processed result
+                if (failedOps.length === 0 && processedOps.length > 0) {
+                  uploadedImage.cloudinaryUrl = currentSourceUrl;
+                  uploadedImage.url = currentSourceUrl;
+                  uploadedImage.isProcessed = true;
+                  uploadedImage.processedOperations = processedOps;
+                  uploadedImage.processingStatus = "success";
+                } else {
+                  uploadedImage.isProcessed = false;
+                  uploadedImage.processingStatus =
+                    failedOps.length === activeOperations.length
+                      ? "failed"
+                      : "partial_failure";
+                  uploadedImage.processedOperations = processedOps;
+                  uploadedImage.failedOperations = failedOps;
+                  setError((prev) =>
+                    prev
+                      ? `${prev}\n${originalName}: ${failedOps.join(", ")}`
+                      : `${originalName}: ${failedOps.join(", ")}`
+                  );
+                }
               }
-            }
             })
           );
           console.log("All AI tasks finished.");
@@ -974,7 +1169,7 @@ const isImgFile=(file)=>{
       setUploading(false);
     }
   };
-  
+
   const removeImage = (id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
   };
@@ -1073,7 +1268,7 @@ const isImgFile=(file)=>{
                   <input
                     type="file"
                     multiple
-                     accept="image/*,.pdf"
+                    accept="image/*,.pdf"
                     onChange={(e) =>
                       e.target.files &&
                       handleFileSelect(Array.from(e.target.files))
@@ -1206,7 +1401,7 @@ const isImgFile=(file)=>{
                     <div key={image.id} className="relative group">
                       <div className="aspect-square bg-slate-100 rounded-lg overflow-hidden relative">
                         {" "}
-                        {image.preview && image.preview !=='/pdf-icon.svg' ? (
+                        {image.preview && image.preview !== "/pdf-icon.svg" ? (
                           <img
                             src={image.preview}
                             alt={image.name}
@@ -1214,20 +1409,24 @@ const isImgFile=(file)=>{
                           />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
-                            <FileText className="w-12 h-12 text-red-500"/>
-                             <span className="mt-2 text-xs text-slate-600">PDF Document</span>
+                            <FileText className="w-12 h-12 text-red-500" />
+                            <span className="mt-2 text-xs text-slate-600">
+                              PDF Document
+                            </span>
                             {/* <Globe className="w-12 h-12 text-slate-400" /> */}
                           </div>
                         )}
-                          <div className="absolute top-2 left-2 z-10">
-        <div className={`px-2 py-1 text-xs font-medium rounded ${
-          isPdfFile(image) 
-            ? "bg-red-100 text-red-800" 
-            : "bg-blue-100 text-blue-800"
-        }`}>
-          {isPdfFile(image) ? "PDF" : "Image"}
-        </div>
-      </div>
+                        <div className="absolute top-2 left-2 z-10">
+                          <div
+                            className={`px-2 py-1 text-xs font-medium rounded ${
+                              isPdfFile(image)
+                                ? "bg-red-100 text-red-800"
+                                : "bg-blue-100 text-blue-800"
+                            }`}
+                          >
+                            {isPdfFile(image) ? "PDF" : "Image"}
+                          </div>
+                        </div>
                         {(image.processingStatus || image.autoFixStatus) && (
                           <div className="absolute top-2 left-2 z-10">
                             {image.processingStatus === "success" && (
@@ -1266,9 +1465,7 @@ const isImgFile=(file)=>{
                             </div>
                           </div>
                         )}
-                        {/* HOVER BUTTONS - Keep this after the badge */}
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center space-x-2">
-                          {/* Edit/Crop Button */}
                           {selectedProcessing.includes("crop") && (
                             <button
                               onClick={() => setEditingImage(image)}
@@ -1276,6 +1473,20 @@ const isImgFile=(file)=>{
                               title="Crop Image"
                             >
                               <Crop className="w-4 h-4 text-blue-600" />
+                            </button>
+                          )}
+                          {selectedProcessing.includes("recolor") && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRecoloringImage(image);
+                                setPickedColor("#000000");
+                                setReplaceColor("#ff0000");
+                              }}
+                              className="p-2 bg-purple-600 text-white rounded-full hover:bg-purple-700"
+                              title="Recolor Product"
+                            >
+                              <Palette className="w-4 h-4" />
                             </button>
                           )}
                           {selectedProcessing.includes("line-diagram") && (
@@ -1937,117 +2148,124 @@ const isImgFile=(file)=>{
                 </p>
                 <div className="space-y-1 max-h-[600px] overflow-y-auto">
                   {PROCESSING_OPTIONS.map((option) => {
-                    const isPdfOperation=option.id==='pdf-extract'
-                    const isImageOperation=!isPdfOperation
-                    const hasPdfs = images.some(img => isPdfFile(img))
-                    const hasImages=images.some(img=>isImgFile(img))
-                    const isDisabled=(isPdfOperation && !hasPdfs)||(isImageOperation && !hasImages)
+                    const isPdfOperation = option.id === "pdf-extract";
+                    const isImageOperation = !isPdfOperation;
+                    const hasPdfs = images.some((img) => isPdfFile(img));
+                    const hasImages = images.some((img) => isImgFile(img));
+                    const isDisabled =
+                      (isPdfOperation && !hasPdfs) ||
+                      (isImageOperation && !hasImages);
                     return (
-                    <div key={option.id}>
-                      <label
-                        className={`flex items-start space-x-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                          selectedProcessing.includes(option.id)
-                            ? "border-blue-500 bg-blue-50"
-                            : "border-slate-200 hover:bg-slate-50"
-                        } ${isDisabled?'opacity-50 cursor-not-allowed':""}`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedProcessing.includes(option.id)}
-                          onChange={() => {
-                            if(isDisabled)
-                            {
-                              if(isPdfOperation)
-                              {
-                                toast.error("PDF extraction can be performed only on PDF files!")
-
-                              }
-                              else
-                              {
-                                toast.error(`${option.label} can only be performed on image files`);
-                              }
-                              return
-                            }
-                            toggleProcessing(option.id)}}
-                          className="w-4 h-4 text-blue-600 rounded mt-0.5 flex-shrink-0"
-                          disabled={isDisabled}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-slate-900">
-                            {option.label}
-                          </p>
-                          <p className="text-xs text-slate-600 mt-0.5">
-                            {option.description}
-                             {isPdfOperation ? " (PDF files only)" : " (Image files only)"}
-                          </p>
-                        </div>
-                      </label>
-                      {option.id === "resize" &&
-                        selectedProcessing.includes("resize") && (
-                          <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm grid grid-cols-2 gap-2">
-                            <div>
-                              <label className="text-xs font-semibold text-slate-500">
-                                Width (px)
-                              </label>
-                              <input
-                                type="number"
-                                value={resizeDims.width}
-                                onChange={(e) =>
-                                  setResizeDims((prev) => ({
-                                    ...prev,
-                                    width: Number(e.target.value),
-                                  }))
+                      <div key={option.id}>
+                        <label
+                          className={`flex items-start space-x-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                            selectedProcessing.includes(option.id)
+                              ? "border-blue-500 bg-blue-50"
+                              : "border-slate-200 hover:bg-slate-50"
+                          } ${
+                            isDisabled ? "opacity-50 cursor-not-allowed" : ""
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedProcessing.includes(option.id)}
+                            onChange={() => {
+                              if (isDisabled) {
+                                if (isPdfOperation) {
+                                  toast.error(
+                                    "PDF extraction can be performed only on PDF files!"
+                                  );
+                                } else {
+                                  toast.error(
+                                    `${option.label} can only be performed on image files`
+                                  );
                                 }
-                                className="w-full mt-1 px-2 py-1 text-sm border rounded"
-                              />
-                            </div>
-                            <div>
-                              <label className="text-xs font-semibold text-slate-500">
-                                Height (px)
-                              </label>
-                              <input
-                                type="number"
-                                value={resizeDims.height}
-                                onChange={(e) =>
-                                  setResizeDims((prev) => ({
-                                    ...prev,
-                                    height: Number(e.target.value),
-                                  }))
-                                }
-                                className="w-full mt-1 px-2 py-1 text-sm border rounded"
-                              />
-                            </div>
-                          </div>
-                        )}
-                      {option.id === "compress" &&
-                        selectedProcessing.includes("compress") && (
-                          <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm">
-                            <div className="flex justify-between mb-1">
-                              <label className="text-xs font-semibold text-slate-500">
-                                Quality
-                              </label>
-                              <span className="text-xs font-bold text-blue-600">
-                                {compressionQuality}%
-                              </span>
-                            </div>
-                            <input
-                              type="range"
-                              min="10"
-                              max="100"
-                              step="5"
-                              value={compressionQuality}
-                              onChange={(e) =>
-                                setCompressionQuality(Number(e.target.value))
+                                return;
                               }
-                              className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                            />
-                            <p className="text-[10px] text-slate-400 mt-1">
-                              Lower % = Smaller file size, lower quality.
+                              toggleProcessing(option.id);
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded mt-0.5 flex-shrink-0"
+                            disabled={isDisabled}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-900">
+                              {option.label}
+                            </p>
+                            <p className="text-xs text-slate-600 mt-0.5">
+                              {option.description}
+                              {isPdfOperation
+                                ? " (PDF files only)"
+                                : " (Image files only)"}
                             </p>
                           </div>
-                        )}
-                    </div>
-)})}
+                        </label>
+                        {option.id === "resize" &&
+                          selectedProcessing.includes("resize") && (
+                            <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-xs font-semibold text-slate-500">
+                                  Width (px)
+                                </label>
+                                <input
+                                  type="number"
+                                  value={resizeDims.width}
+                                  onChange={(e) =>
+                                    setResizeDims((prev) => ({
+                                      ...prev,
+                                      width: Number(e.target.value),
+                                    }))
+                                  }
+                                  className="w-full mt-1 px-2 py-1 text-sm border rounded"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-xs font-semibold text-slate-500">
+                                  Height (px)
+                                </label>
+                                <input
+                                  type="number"
+                                  value={resizeDims.height}
+                                  onChange={(e) =>
+                                    setResizeDims((prev) => ({
+                                      ...prev,
+                                      height: Number(e.target.value),
+                                    }))
+                                  }
+                                  className="w-full mt-1 px-2 py-1 text-sm border rounded"
+                                />
+                              </div>
+                            </div>
+                          )}
+                        {option.id === "compress" &&
+                          selectedProcessing.includes("compress") && (
+                            <div className="mt-2 ml-8 p-3 bg-white border border-slate-200 rounded-lg shadow-sm">
+                              <div className="flex justify-between mb-1">
+                                <label className="text-xs font-semibold text-slate-500">
+                                  Quality
+                                </label>
+                                <span className="text-xs font-bold text-blue-600">
+                                  {compressionQuality}%
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min="10"
+                                max="100"
+                                step="5"
+                                value={compressionQuality}
+                                onChange={(e) =>
+                                  setCompressionQuality(Number(e.target.value))
+                                }
+                                className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                              />
+                              <p className="text-[10px] text-slate-400 mt-1">
+                                Lower % = Smaller file size, lower quality.
+                              </p>
+                            </div>
+                          )}
+                      </div>
+                    );
+                  })}
                 </div>
                 {selectedProcessing.length > 0 && (
                   <div className="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
@@ -2077,6 +2295,168 @@ const isImgFile=(file)=>{
           onSave={handleMeasurementSave}
         />
       )}
+ {recoloringImage && (
+  <div
+    className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4"
+    onClick={() => setRecoloringImage(null)}
+  >
+    <div
+      className="bg-white rounded-2xl max-w-6xl w-full max-h-[95vh] overflow-hidden shadow-2xl"
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="p-6 border-b flex items-center justify-between bg-gradient-to-r from-purple-600 to-pink-600 text-white">
+        <h2 className="text-2xl font-bold flex items-center gap-3">
+          <Palette className="w-8 h-8" />
+          Recolor Product
+        </h2>
+        <button
+          onClick={() => setRecoloringImage(null)}
+          className="p-2 hover:bg-white/20 rounded-lg transition"
+        >
+          <X className="w-6 h-6" />
+        </button>
+      </div>
+      
+      <div className="p-8 grid lg:grid-cols-2 gap-10 overflow-y-auto max-h-[75vh]">
+        <div>
+          <h3 className="text-lg font-semibold mb-4">Original Image</h3>
+          <div className="relative">
+            <img
+              src={recoloringImage.preview || recoloringImage.url}
+              alt="Original"
+              className="w-full rounded-xl shadow-lg border-4 border-gray-200"
+              id="original-image"
+              onClick={handleImageColorPick}
+            />
+            <div className="mt-4 p-3 bg-slate-50 rounded-lg">
+              <p className="text-sm text-slate-600">
+                Click on the original image to pick a color
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Recolored Preview */}
+        <div>
+          <h3 className="text-lg font-semibold mb-4">Recolored Preview</h3>
+          <div className="relative rounded-xl overflow-hidden shadow-2xl mb-8 border-4 border-purple-200">
+            {/* Preview Image */}
+            <img
+              src={getRecoloredPreviewUrl()}
+              alt="Recolored preview"
+              className="w-full rounded-lg"
+              id="recolored-preview"
+            />
+          </div>
+
+          {/* Color Controls */}
+          <div className="space-y-6">
+            <div className="grid grid-cols-2 gap-6">
+              {/* Color to Replace */}
+              <div className="text-center p-4 bg-slate-50 rounded-xl">
+                <p className="text-sm font-medium text-slate-700 mb-3">
+                  Color to Replace
+                </p>
+                <div
+                  className="w-32 h-32 rounded-2xl shadow-lg border-4 border-white mx-auto mb-3"
+                  style={{ backgroundColor: pickedColor }}
+                />
+                <div className="flex items-center justify-center gap-2">
+                  <input
+                    type="color"
+                    value={pickedColor}
+                    onChange={(e) => setPickedColor(e.target.value)}
+                    className="w-8 h-8 cursor-pointer"
+                  />
+                  <input
+                    type="text"
+                    value={pickedColor}
+                    onChange={(e) => setPickedColor(e.target.value)}
+                    className="font-mono text-sm px-2 py-1 border rounded"
+                  />
+                </div>
+                <button
+                  onClick={pickColorFromImage}
+                  className="mt-3 px-4 py-2 bg-blue-100 text-blue-700 text-sm font-medium rounded-lg hover:bg-blue-200 transition"
+                >
+                  Pick from Image
+                </button>
+              </div>
+
+              {/* Replacement Color */}
+              <div className="text-center p-4 bg-slate-50 rounded-xl">
+                <p className="text-sm font-medium text-slate-700 mb-3">
+                  Replacement Color
+                </p>
+                <input
+                  type="color"
+                  value={replaceColor}
+                  onChange={(e) => setReplaceColor(e.target.value)}
+                  className="w-32 h-32 rounded-2xl cursor-pointer shadow-lg border-4 border-white mb-3"
+                />
+                <div className="flex items-center justify-center gap-2">
+                  <span className="text-lg">#</span>
+                  <input
+                    type="text"
+                    value={replaceColor.replace('#', '')}
+                    onChange={(e) => setReplaceColor('#' + e.target.value)}
+                    className="font-mono text-sm px-2 py-1 border rounded w-24"
+                    placeholder="FF0000"
+                  />
+                </div>
+                <div className="mt-3 space-y-1">
+                  <button
+                    onClick={() => setReplaceColor('#FF0000')}
+                    className="w-6 h-6 bg-red-500 rounded-full border-2 border-white"
+                    title="Red"
+                  />
+                  <button
+                    onClick={() => setReplaceColor('#0000FF')}
+                    className="w-6 h-6 bg-blue-500 rounded-full border-2 border-white ml-2"
+                    title="Blue"
+                  />
+                  <button
+                    onClick={() => setReplaceColor('#00FF00')}
+                    className="w-6 h-6 bg-green-500 rounded-full border-2 border-white ml-2"
+                    title="Green"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="flex justify-center gap-4">
+              <button
+                onClick={applyRecoloring}
+                disabled={isApplyingRecolor}
+                className="px-8 py-3 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-bold rounded-xl hover:shadow-2xl transition flex items-center gap-3 disabled:opacity-50"
+              >
+                {isApplyingRecolor ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Apply Recoloring
+                  </>
+                )}
+              </button>
+              
+              <button
+                onClick={() => setRecoloringImage(null)}
+                className="px-6 py-3 border-2 border-slate-300 text-slate-700 font-medium rounded-xl hover:bg-slate-50 transition"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+)}
     </>
   );
 }
