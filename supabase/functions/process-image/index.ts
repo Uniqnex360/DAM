@@ -721,7 +721,7 @@ serve(async (req) => {
                 operations_applied: [operation],
                 resource_type: "image",
                 name: `${originalName || "document"} - Page ${pageNum}`,
-                parent_id: imageId, // Reference to the original PDF image
+                parent_id: imageId, 
               })
               .select()
               .single();
@@ -744,7 +744,6 @@ serve(async (req) => {
         }
       }
 
-      // Return all extracted images
       return new Response(
         JSON.stringify({
           success: true,
@@ -856,7 +855,7 @@ serve(async (req) => {
         .join("");
 
       const cloudinaryForm = new FormData();
-      cloudinaryForm.append("file", resultBlob); // Processed Blob
+      cloudinaryForm.append("file", resultBlob);
       cloudinaryForm.append("api_key", API_KEY);
       cloudinaryForm.append("timestamp", timestamp.toString());
       cloudinaryForm.append("signature", signature);

@@ -1,9 +1,10 @@
-import { Trash2, Edit3 } from "lucide-react";
+import { Trash2, Edit3, Copy } from "lucide-react";
 import { Measurement } from "../lib/supabase";
 
 interface MeasurementListProps {
   measurements: Measurement[];
   selectedId: string | null;
+  onCopy: (id:string)=>void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onUpdate: (id: string, updates: Partial<Measurement>) => void;
@@ -36,6 +37,7 @@ export function MeasurementList({
   measurements,
   selectedId,
   onSelect,
+  onCopy,
   onDelete,
   onUpdate,
   editingId,
@@ -159,14 +161,14 @@ export function MeasurementList({
                           actual_value: e.target.value,
                         })
                       }
-                      onKeyDown={(e)=>{
-                        if(e.key==='Enter')
-                        {
-                          e.stopPropagation()
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.stopPropagation();
                         }
                       }}
-                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-                      placeholder="Enter value(press Enter for new line)" rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+                      placeholder="Enter value(press Enter for new line)"
+                      rows={3}
                     />
                   </div>
 
@@ -329,6 +331,13 @@ export function MeasurementList({
                   Measurement #{index + 1}
                 </span>
                 <div className="flex gap-2">
+                  <button onClick={(e)=>{
+                    e.stopPropagation()
+                    onCopy(m.id)
+                  }}
+                  className="p-2 text-green-600 hover:bg-green-100 rounded-lg transition-opacity" title="Copy">
+                    <Copy className="w-4 h-4"/>
+                  </button>
                   <button
                     onClick={(e) => {
                       e.stopPropagation();

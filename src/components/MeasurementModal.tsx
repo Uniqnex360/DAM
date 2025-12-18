@@ -23,12 +23,8 @@ export function MeasurementModal({
 }: MeasurementModalProps) {
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const [measurements, setMeasurements] = useState<Measurement[]>(existingMeasurements);
-  const [activeTool, setActiveTool] = useState<"select" | "line" | "ruler">(
-    "line"
-  );
-  const [selectedMeasurementId, setSelectedMeasurementId] = useState<
-    string | null
-  >(null);
+  const [activeTool, setActiveTool] = useState<"select" | "line" | "ruler"|"move"|'copy'>("line");
+  const [selectedMeasurementId, setSelectedMeasurementId] = useState<string | null>(null);
   useEffect(()=>{
     if(existingMeasurements && existingMeasurements.length>0)
     {
@@ -65,6 +61,21 @@ export function MeasurementModal({
     };
     setMeasurements([...measurements, newMeasurement]);
   };
+  const handleCopyMeasurements=(id:string)=>{
+    const measurementCopy=measurements.find(m=>m.id===id)
+    if(!measurementCopy)return
+    const newMeasurement:Measurement={
+      ...measurementCopy,
+      id:`measurement-${Date.now()}-${Math.random().toString(36).substr(2,9)}`,
+      start_x:measurementCopy.start_x+20,
+      start_y:measurementCopy.start_y+20,
+      end_x:measurementCopy.end_x+20,
+      end_y:measurementCopy.end_y+20
+    }
+    setMeasurements([...measurements,newMeasurement])
+    setSelectedMeasurementId(newMeasurement.id)
+  }
+  
   console.log('measurement modal called')
   const handleMeasurementUpdate = (
     id: string,
@@ -459,7 +470,7 @@ const scaleFactor=imageSize.width/displayCanvasWidth
         <div className="flex-1 flex overflow-hidden">
           {/* Canvas Area */}
           <div className="flex-1 flex flex-col">
-            <Toolbar activeTool={activeTool} onToolChange={setActiveTool} />
+            <Toolbar activeTool={activeTool} onToolChange={setActiveTool} hasMeasurements={measurements.length > 0}/>
             <div ref={canvasContainerRef} className="flex-1 p-4 bg-slate-100">
               <MeasurementCanvas
                 imageUrl={imageUrl}
@@ -491,6 +502,7 @@ const scaleFactor=imageSize.width/displayCanvasWidth
               onDelete={handleMeasurementDelete}
               onUpdate={handleMeasurementUpdate}
               editingId={editingId}
+              onCopy={handleCopyMeasurements}
               setEditingId={setEditingId}
               editValues={editValues}
               setEditValues={setEditValues}
