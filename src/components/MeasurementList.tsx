@@ -70,8 +70,9 @@ export function MeasurementList({
 
   const handleEdit = (m: Measurement) => {
     setEditingId(m.id);
+     const defaultValue = m.actual_value?.toString() || `${m.pixel_length.toFixed(2)}px`;
     setEditValues({
-      actual_value: m.actual_value?.toString() || "",
+      actual_value:defaultValue,
       // unit: m.unit,
       label: m.label || "",
       color: m.color,
@@ -169,7 +170,11 @@ export function MeasurementList({
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                       placeholder="Enter value(press Enter for new line)"
                       rows={3}
+
                     />
+                    <p className="text-xs text-gray-500 mt-1">
+    Current pixel length: {measurements.find(m => m.id === editingId)?.pixel_length.toFixed(2)}px
+  </p>
                   </div>
 
                   {/* <div>
