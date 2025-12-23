@@ -445,7 +445,7 @@ const applyRecoloring = async () => {
     
     setTimeout(() => {
         setIsAnalyzing(false);
-        toast.info("Ready for server-side AI analysis on upload");
+        toast.info("Analysing....");
     }, 1500);
   };
   const handleCropSave = (newFile: File) => {
